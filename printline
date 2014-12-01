@@ -1,0 +1,1174 @@
+#! /bin/sh
+# printline
+# A wrapper for f_printline function.  Adds built-in help and demo.
+pl_version="1.0"
+
+# f_printline: A function for printing a line of text within fields defined by
+# column location.  Tested with dash and bash.  Also requires grep (Debian/
+# Ubuntu package "grep") and wc, stty, fold, cut, printf, echo, seq ("coreutils"
+# or shell built-ins).  Support functions f_fplhelp (built-in help) and
+# f_fpldemo are optional.  The demo requires "route" (net-tools).
+
+# Copyright 2014 Jeff D. Hanson <jhansonxi@gmail.com>
+# License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+# This is free software: you are free to change and redistribute it.
+# There is NO WARRANTY, to the extent permitted by law."
+
+# TODO:
+# Add gettext support: https://www.gnu.org/software/gettext/
+# Add support for wide characters.
+# Field wrapping:  Not feasible with the current structure.  Would require
+# arrays or processing the entire field list multiple times.
+
+# Changes:
+# 0.1 - Initial release
+# 0.2 - Major rewrite.  WTF was I thinking?
+
+
+# Function for printing a line of text within fields defined by column location.
+f_printline () {
+
+fpl_version="0.2"
+
+# Debug enabled if not null
+fpl_debug=""
+
+# Early attempt to find --debug on command line (must be first)
+[ "$1" = "--debug" ] && fpl_debug="Y"
+
+# Print command line if debug active
+[ -n "$fpl_debug" ] && echo "f_printline start: $@" 1>&2
+
+# Alternate debug print of command line with notation of non-printing characters
+# [ -n "$fpl_debug" ] && echo "f_printline start: $@"|cat -v 1>&2
+
+# Assume success
+fpl_status=0
+
+# Set name for info options
+fpl_name="f_printline"
+fpl_infovers="$fpl_version"
+[ "$(basename "$0")" = "printline" ] && fpl_name="printline" && fpl_infovers="$pl_version"
+
+# Default padding character
+fpl_defpadchr=" "
+
+# Default text
+fpl_deftext=""
+
+# Default text prefix
+fpl_defprefix=""
+
+# Default text suffix
+fpl_defsuffix=""
+
+# Default alignment
+fpl_align="c"
+
+# Default centering bias
+fpl_cbias="l"
+
+# Default left boundary character
+fpl_lbound=""
+
+# Default right boundary character
+fpl_rbound=""
+
+# Default inter-field boundary character
+fpl_defmbound=""
+
+# Set default left overflow character and initialize variable for printing
+fpl_defloflowc=""
+fpl_loflowc=""
+
+# Set default right overflow character and initialize variable for printing
+fpl_defroflowc=""
+fpl_roflowc=""
+
+# Get terminal width if not already set.  If stty does not produce it then
+# use the default.
+if [ -z "$fpl_endcol" ]; then
+    fpl_endcol=$(stty size 2>/dev/null | cut -d' ' -f2)
+    if [ -z "$fpl_endcol" ]; then
+        fpl_endcol=80
+    fi
+fi
+[ -n "$fpl_debug" ] && echo "f_printline: fpl_endcol: $fpl_endcol" 1>&2
+
+# Set invalid match patterns for case statement for secondary functions.  These
+# will be set with valid patterns by f_fplextras if the related functions exist.
+# This design reduces clutter in f_printline when used in other scripts that
+# do not need the help and demo functions.
+fpl_verparm1="_INVALID_"
+fpl_verparm2="_INVALID_"
+fpl_helpparm1="_INVALID_"
+fpl_helpparm2="_INVALID_"
+fpl_usgparm1="_INVALID_"
+fpl_usgparm2="_INVALID_"
+fpl_demoparm="_INVALID_"
+fpl_colinparm1="_INVALID_"
+fpl_colinparm2="_INVALID_"
+type f_fplextras >/dev/null 2>&1 && f_fplextras
+
+# Default starting position of current field
+fpl_fldstrt=1
+
+# Intialize field end variable
+fpl_fldendp=0
+
+# Initialize "show" variables
+fpl_showhelp=""
+fpl_showver=""
+fpl_showdemo=""
+fpl_showuse=""
+fpl_showcols=""
+
+# Variable for saving parameter and unconverted value of field declaration for
+# use in error messages.
+fpl_nfparm=""
+
+# Initialize variable for tracking prior field starting column for overlap
+# and collision checking
+fpl_prvfield=0
+
+# Initialize variable for tracking next field starting column for determining
+# ending column of current field.
+fpl_nxtfield=""
+
+
+## Global operator positional parameter processing ##
+
+# Complain and show useage if no parameters specified
+[ $# -eq 0 ] && echo "$fpl_name: ERROR: Missing parameter" 1>&2
+
+# Variable to flag when an unrecognized parameter is encountered.  This causes
+# the loop to exit so the main input processing loop can finish the job.
+fpl_globalend=0
+
+# Get global -n parameter first if it exists
+while [ $# -gt 0 ] && [ $fpl_globalend -eq 0 ]; do
+    [ -n "$fpl_debug" ] && echo "Global CASE: $1" 1>&2
+    case "$1" in
+
+        --no-newline|-n)
+            fpl_nonl="Y"
+        ;;
+
+        --debug) fpl_debug="Y";;
+
+        --end|-e)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires second parameter" 1>&2
+                return 1
+            fi
+            if ! echo "$2" | grep -q '^[[:digit:]]\+$'; then
+                echo "$fpl_name: ERROR: $1 value must be non-negative integer" 1>&2
+                return 1
+            else
+                shift
+                fpl_endcol="$1"
+            fi
+        ;;
+
+        --left-boundary|-L)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires boundary character(s) specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_lbound="$1"
+        ;;
+
+        --middle-boundary-def|-M)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires boundary character(s) specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_defmbound="$1"
+        ;;
+
+        --right-boundary|-R)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires boundary character(s) specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_rbound="$1"
+        ;;
+
+        --text-default|-T)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires text to be specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_deftext="$1"
+        ;;
+
+        --prefix-default|-P)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires character(s) specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_defprefix="$1"
+        ;;
+
+        --suffix-default|-S)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires character(s) specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_defsuffix="$1"
+        ;;
+
+        --whitespace-default|-W)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires text to be specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_defpadchr="$1"
+        ;;
+
+        --left-overflow|-l)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires text to be specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_defloflowc="$1"
+        ;;
+
+        --right-overflow|-r)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires text to be specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_defroflowc="$1"
+        ;;
+
+        # Extras supplied by secondary functions if present
+
+        $fpl_verparm1|$fpl_verparm2)
+            fpl_showver="Y"
+        ;;
+
+        $fpl_colinparm1|$fpl_colinparm2)
+            fpl_showcols="Y"
+        ;;
+
+        $fpl_demoparm)
+            fpl_showdemo="Y"
+        ;;
+
+        "$fpl_helpparm1"|"$fpl_helpparm2")
+            fpl_showhelp="Y"
+        ;;
+
+        "$fpl_usgparm1"|"$fpl_usgparm2")
+            fpl_showuse="Y"
+        ;;
+
+        *)
+            # Unrecognized parameter so either done with globals or its invalid.
+            # The main positional parameter processing loop will figure it out.
+            fpl_globalend=1
+        ;;
+    esac
+
+    # Shift if there are parameters remaining but not if an unrecognized
+    # parameter is in the queue since the main parameter processing loop
+    # will start with it.
+    [ $# -gt 0 ] && [ $fpl_globalend -eq 0 ] && shift
+done
+
+# If --help, --version, --usage, or --demo specified then output/call them and return
+if [ -n "$fpl_showhelp" ]; then
+    f_fplhelp
+    return 0
+
+elif [ -n "$fpl_showver" ]; then
+    f_fplversion
+    return 0
+
+elif [ -n "$fpl_showuse" ]; then
+    f_fplusage
+    return $?
+
+elif [ -n "$fpl_showdemo" ]; then
+    f_fpldemo
+    return $?
+fi
+
+
+## Main positional parameter processing ##
+
+# Initialize "last field" variable.  Because field processing can not
+# commence until the field endpoint is known from either the next field
+# declaration location or by defaulting to the last column when all positional
+# parameters are processed, the loop can not rely entirely on $# to determine
+# completion.  It is set null if, after field processing, there are no more
+# parameters and $fpl_nxtfield is null.  This causes the loop to exit.  The
+# field is not initialized null to cause the main loop to perform at least one
+# cycle.  This is to cover the case where the globals are sufficient to produce
+# output but there are no other parameters.
+fpl_lastfld="Y"
+
+# Set padding and text variables to defaults
+fpl_padchr="$fpl_defpadchr"
+fpl_text="$fpl_deftext"
+fpl_prefix="$fpl_defprefix"
+fpl_suffix="$fpl_defsuffix"
+fpl_mbound="$fpl_defmbound"
+
+while [ $# -gt 0 ] || [ -n "$fpl_lastfld" ]; do
+    [ -n "$fpl_debug" ] && echo "Main CASE: $1" 1>&2
+    case "$1" in
+
+        --field|-f)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires second parameter" 1>&2
+                return 1
+            fi
+            if ! echo "$2" \
+            | grep -q '^[[:digit:]]\+$\|^+[[:digit:]]\+$\|^[[:digit:]]\+%$\|^+[[:digit:]]\+%$'; then
+                echo "$fpl_name: ERROR: Invalid location: $2" 1>&2
+                return 1
+            else
+                # Format correct so save a copy for error messages
+                fpl_nfparm="$1 $2"
+                shift
+                fpl_nxtfield="$1"
+            fi
+        ;;
+
+        --text|-t)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires character(s) specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_text="$1"
+        ;;
+
+        --prefix|-p)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires character(s) specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_prefix="$1"
+        ;;
+
+        --suffix|-s)
+            if [ $# -le 1 ]; then
+                echo "ERROR: $1 requires character(s) specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_suffix="$1"
+        ;;
+
+        --alignment|-a)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires alignment parameter <c|l|r>" 1>&2
+                return 1
+            fi
+            if ! echo "$2" | grep -q '^[clr]$'; then
+                echo "$fpl_name: ERROR: Invalid alignment specified: $2" 1>&2
+                return 1
+            else
+                shift
+                fpl_align=$1
+            fi
+        ;;
+
+        --center-bias|-b)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires bias parameter <l|r>" 1>&2
+                return 1
+            fi
+            if ! echo "$2" | grep -q '^[lr]$'; then
+                echo "$fpl_name: ERROR: Invalid bias specified: $2" 1>&2
+                return 1
+            else
+                shift
+                fpl_cbias=$1
+            fi
+        ;;
+
+        --middle-boundary|-m)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires boundary character(s) specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_mbound="$1"
+        ;;
+
+        --whitespace|-w)
+            if [ $# -le 1 ]; then
+                echo "$fpl_name: ERROR: $1 requires character(s) specified" 1>&2
+                return 1
+            fi
+            shift
+            fpl_padchr="$1"
+        ;;
+
+        *)
+            # Suppress error if there are no more input parameters because this
+            # cycle could be for processing the last field whose endpoint is
+            # the last column.
+            if [ $# -gt 0 ]; then
+                echo "$fpl_name: ERROR: Unknown option specified: $1" 1>&2
+                [ -n "$fpl_errhelp" ] && echo "$fpl_errhelp" 1>&2
+                echo "Hint: Global options must be first on the command line!" 1>&2
+                return 1
+            fi
+        ;;
+    esac
+    [ $# -gt 0 ] && shift
+
+
+## Field processing ##
+
+    # If the next field declaration location was found it marks the end of
+    # parameters for the current field and its endpoint can be obtained.  If
+    # all input parameters were processed then the endpoint for the last field
+    # is the last column.
+    if [ $# -eq 0 ] || [ -n "$fpl_nxtfield" ]; then
+
+        [ -n "$fpl_debug" ] && for fpl_varname in fpl_prvfield fpl_fldstrt fpl_nxtfield fpl_text fpl_prefix fpl_suffix fpl_align fpl_cbias fpl_padchr fpl_lbound fpl_mbound fpl_rbound; do eval echo \"$fpl_varname: \$$fpl_varname\" 1>&2; done
+
+        # Conversion of next field location to column number
+        if [ -n "$fpl_nxtfield" ]; then
+            # Convert to a column number if it is not already
+            if echo "$fpl_nxtfield" | grep -q '^+[[:digit:]]\+$'; then
+                # Integer offset
+                fpl_nxtfield=$(echo "$fpl_nxtfield" | cut -d '+' -f2)
+                fpl_nxtfield=$(( $fpl_fldstrt + $fpl_nxtfield ))
+
+            elif echo "$fpl_nxtfield" | grep -q '^[[:digit:]]\+%$'; then
+                # Absolute percentage
+                fpl_nxtfield=$(echo "$fpl_nxtfield" | cut -d '%' -f1)
+
+                if [ $fpl_nxtfield -lt 1 ]; then
+                    echo "$fpl_name: ERROR: Not greater than 0%: $fpl_nfparm" 1>&2
+                    return 1
+                fi
+
+                if [ $fpl_nxtfield -gt 100 ]; then
+                    echo "$fpl_name: ERROR: Greater than 100%: $fpl_nfparm" 1>&2
+                    return 1
+                fi
+
+                if [ $fpl_nxtfield -eq 100 ]; then
+                    # Set to end column to prevent round-off error
+                    fpl_nxtfield=$fpl_endcol
+                else
+                    # Convert to column position based on terminal width with
+                    # rounding.  The status of the test is the rounding
+                    # adjustment.
+                    fpl_nxtfield=$(( (($fpl_endcol * $fpl_nxtfield) / 100) \
+                    + $([ $(( $fpl_endcol * $fpl_nxtfield % 100 )) -lt 50 ]; echo $?) ))
+                fi
+
+            elif echo "$fpl_nxtfield" | grep -q '^+[[:digit:]]\+%$'; then
+                # Percentage offset
+                fpl_nxtfield=$(echo "$fpl_nxtfield" | cut -d '+' -f2 | cut -d '%' -f1)
+
+                if [ $fpl_nxtfield -lt 1 ]; then
+                    echo "$fpl_name: ERROR: Not greater than 0%: $fpl_nfparm" 1>&2
+                    return 1
+                fi
+
+                if [ $fpl_nxtfield -gt 100 ]; then
+                    echo "$fpl_name: ERROR: Greater than 100%: $fpl_nfparm" 1>&2
+                    return 1
+                fi
+
+                fpl_nxtfield=$(( ((($fpl_endcol - $fpl_fldstrt) * $fpl_nxtfield) / 100) \
+                + $fpl_fldstrt \
+                + $([ $(( ($fpl_endcol - $fpl_fldstrt) * $fpl_nxtfield % 100 )) -lt 50 ]; echo $?) ))
+            fi
+
+            # Check if valid
+            if [ $fpl_nxtfield -gt $fpl_endcol ]; then
+                echo "$fpl_name: ERROR: $fpl_nfparm resolved to column $fpl_nxtfield that is beyond the end column ($fpl_endcol)" 1>&2
+                return 1
+            elif [ $fpl_nxtfield -eq $fpl_fldstrt ]; then
+                echo "$fpl_name: ERROR: $fpl_nfparm resolved to column $fpl_nxtfield that collides with the previous field" 1>&2
+                return 1
+            elif [ $fpl_nxtfield -lt $fpl_fldstrt ]; then
+                echo "$fpl_name: ERROR: $fpl_nfparm resolved to column $fpl_nxtfield that is left of the previous field at $fpl_fldstrt" 1>&2
+                return 1
+            else
+                # Valid so calculate the endpoint for the current field
+                fpl_fldendp=$(( $fpl_nxtfield - 1 ))
+            fi
+        fi  # Next field declaration found
+
+        # If no "next field" than field processing was triggered by a lack of
+        # input parameters.  If there is no an endpoint set for the current
+        # field then set it to the last column.
+        [ -z "$fpl_nxtfield" ] && fpl_fldendp=$fpl_endcol
+
+        # Get the length of the current field
+        fpl_fldln=$(( $fpl_fldendp - $fpl_fldstrt + 1 ))
+
+
+        # Adjust field length for boundary characters.  To allow for UTF-8
+        # encodings they are always assumed to use only 1 column.
+        if [ -n "$fpl_mbound" ] && [ -n "$fpl_nxtfield" ]; then
+            # Inner boundary and not the last field
+            fpl_fldln=$(( $fpl_fldln - 1 ))
+            [ -n "$fpl_debug" ] && echo "f_printline: Adjustment for middle boundary character" 1>&2
+        fi
+
+        if [ -n "$fpl_lbound" ] && [ $fpl_fldstrt -eq 1 ]; then
+            # Left boundary and first field
+            fpl_fldln=$(( $fpl_fldln - 1 ))
+            [ -n "$fpl_debug" ] && echo "f_printline: Adjustment for left boundary character" 1>&2
+        fi
+
+        if [ -n "$fpl_rbound" ] && [ -z "$fpl_nxtfield" ]; then
+            # Right boundary and last field
+            fpl_fldln=$(( $fpl_fldln - 1 ))
+            [ -n "$fpl_debug" ] && echo "f_printline: Adjustment for right boundary character" 1>&2
+        fi
+
+
+        # Get length of text with wc.  Using "${#fpl_text}" results in wrong
+        # length with multibyte characters.
+        fpl_textl=$( echo -n "${fpl_text}" | wc -m )
+
+        # Calculate amount of text overflow.  If positive then trimming is
+        # needed.  If negative then padding is needed.  If an overflow
+        # character is specified then additional trimming is needed to
+        # allow space for it.
+        fpl_overflow=$(( $fpl_textl - $fpl_fldln ))
+
+        [ -n "$fpl_debug" ] && echo "f_printline: fpl_fldendp: $fpl_fldendp  fpl_fldln: $fpl_fldln  fpl_textl: $fpl_textl  fpl_overflow: $fpl_overflow" 1>&2
+
+        if [ $fpl_overflow -gt 0 ]; then
+            # Need to trim the text to fit within the field
+            if [ "$fpl_align" = "l" ] || ([ "$fpl_align" = "c" ] && [ "$fpl_cbias" = "l" ]); then
+                # Left-aligned or centered with left-side bias
+                fpl_trimqty=$fpl_fldln
+
+                # If an overflow character is specified then adjust trim for it
+                # and set printing variable to cause it to print.
+                [ -n "$fpl_defroflowc" ] && fpl_trimqty=$(( $fpl_trimqty - 1 )) && fpl_roflowc="$fpl_defroflowc"
+
+                # Trim if needed
+                if [ $fpl_trimqty -gt 0 ]; then
+                    fpl_text=$(echo "$fpl_text" | cut -b "-$fpl_trimqty")
+                else
+                    # Avoid 0 to prevent "cut" error
+                    fpl_text=""
+                fi
+
+                [ -n "$fpl_debug" ] && echo "f_printline: Trim right end: fpl_trimqty: $fpl_trimqty" 1>&2
+            else
+                # Right-aligned or centered with right-side bias
+                fpl_trimqty=$(( $fpl_overflow + 1 ))
+
+                # If an overflow character is specified then adjust trim for it
+                # and set printing variable to cause it to print.
+                [ -n "$fpl_defloflowc" ] && fpl_trimqty=$(( $fpl_trimqty + 1 )) && fpl_loflowc="$fpl_defloflowc"
+
+                # Trim if needed
+                if [ $fpl_trimqty -gt 0 ]; then
+                    fpl_text=$(echo "$fpl_text" | cut -b "$fpl_trimqty-")
+                else
+                    # Avoid 0 to prevent "cut" error
+                    fpl_text=""
+                fi
+
+                [ -n "$fpl_debug" ] && echo "f_printline: Trim left end: fpl_trimqty: $fpl_trimqty" 1>&2
+            fi
+        fi
+
+        fpl_lpadqty=0
+        fpl_rpadqty=0
+
+        # If padding needed then use the text length and alignment to calculate
+        # quantity.  Bias only affects result when parity of text length is
+        # different than parity of field length (odd vs. even, even vs. odd).
+        if [ $fpl_overflow -lt 0 ]; then
+            if [ "$fpl_align" = "c" ]; then
+                # Centered
+                fpl_lpadqty=$(( ($fpl_fldln - $fpl_textl) / 2 ))
+                fpl_rpadqty=$(( ($fpl_fldln - $fpl_textl) / 2 ))
+
+                [ -n "$fpl_debug" ] && echo "f_printline: Initial padding: fpl_lpadqty: $fpl_lpadqty  fpl_rpadqty: $fpl_rpadqty" 1>&2
+
+                if [ $(( $fpl_textl % 2 )) -ne $(( $fpl_fldln % 2 )) ]; then
+                    # Length parity mismatch
+                    [ -n "$fpl_debug" ] && echo "f_printline: Length parity mismatch: fpl_fldln: $fpl_fldln  fpl_textl: $fpl_textl" 1>&2
+
+                    # Mathematically it does not matter which is odd or even
+                    # when determining padding.  Only the bias matters.
+                    if [ "$fpl_cbias" = "l" ]; then
+                        # Left bias
+                        fpl_lpadqty=$(( $fpl_lpadqty ))
+                        fpl_rpadqty=$(( $fpl_rpadqty + 1 ))
+                    else
+                        # Right bias
+                        fpl_lpadqty=$(( $fpl_lpadqty + 1 ))
+                        fpl_rpadqty=$(( $fpl_rpadqty ))
+                    fi
+                else [ -n "$fpl_debug" ] && echo "f_printline: Same length parity: fpl_fldln: $fpl_fldln  fpl_textl: $fpl_textl" 1>&2
+                fi
+
+            elif [ "$fpl_align" = "l" ]; then
+                # Left-aligned
+                fpl_lpadqty=0
+                fpl_rpadqty=$(( $fpl_fldln - $fpl_textl ))
+            else
+                # Right-aligned
+                fpl_lpadqty=$(( $fpl_fldln - $fpl_textl ))
+                fpl_rpadqty=0
+            fi
+        fi # Overflow negative
+
+        [ -n "$fpl_debug" ] && echo "f_printline: Pre-print: fpl_textl: $fpl_textl  fpl_fldln: $fpl_fldln  fpl_lpadqty: $fpl_lpadqty  fpl_rpadqty: $fpl_rpadqty" 1>&2
+
+# Print left boundary if not null and this is the first field
+[ -n "$fpl_lbound" ] && [ $fpl_fldstrt -eq 1 ] \
+&& printf "%b" "$fpl_lbound"
+
+# Print left-side padding but not if 0 quantity since this always prints
+# at least once
+[ $fpl_lpadqty -gt 0 ] \
+&& printf "%0.b${fpl_padchr}" $(seq 1 $fpl_lpadqty)
+
+# Print text prefix
+[ -n "$fpl_prefix" ] && printf "%b" "$fpl_prefix"
+
+# Print left overflow character if needed
+[ -n "$fpl_loflowc" ] && printf "%b" "$fpl_loflowc"
+
+# Print text
+printf "%b" "$fpl_text"
+
+# Print right overflow character if needed
+[ -n "$fpl_roflowc" ] && printf "%b" "$fpl_roflowc"
+
+# Print text suffix
+[ -n "$fpl_suffix" ] && printf "%b" "$fpl_suffix"
+
+# Print right-side padding but not if 0 quantity since this always prints
+# at least once
+[ $fpl_rpadqty -gt 0 ] \
+&& printf "%0.b${fpl_padchr}" $(seq 1 $fpl_rpadqty)
+
+# Print middle boundary if not null and not the last field
+[ -n "$fpl_mbound" ] && [ -n "$fpl_nxtfield" ] \
+&& printf "%b" "$fpl_mbound"
+
+# Print right boundary if not null and this is the last field
+[ -n "$fpl_rbound" ] && [ -z "$fpl_nxtfield" ] \
+&& printf "%b" "$fpl_rbound"
+
+[ -n "$fpl_debug" ] && echo "f_printline: Field processed: fpl_fldstrt: $fpl_fldstrt  fpl_fldendp: $fpl_fldendp" 1>&2
+
+
+## End of field processing ##
+
+        # Figure out what to do next.  This can not catch the situation where
+        # there is a "next field" along with additional parameters but no
+        # other field declarations.  That is handled before the field processing
+        # section.
+        if [ $# -gt 0 ]; then
+            # There are more input parameters to process which means the current
+            # field processing cycle was triggered by another field declaration
+            # so make this "next field" the current field.
+            fpl_fldstrt=$fpl_nxtfield
+            fpl_nxtfield=""
+            fpl_fldendp=""
+            [ -n "$fpl_debug" ] && echo "f_printline: Post-field processing: More input parameters remaining" 1>&2
+
+        elif [ -n "$fpl_nxtfield" ]; then
+            # No more input parameters to process but there is a final field
+            # declaration to process.  Make it the current field and set the
+            # "last field" variable to keep the loop going for another cycle
+            # so the field can be processed.
+            fpl_fldstrt=$fpl_nxtfield
+            fpl_nxtfield=""
+            fpl_lastfld="Y"
+            [ -n "$fpl_debug" ] && echo "f_printline: Post-field processing: No more input parameters but one last field to process" 1>&2
+
+         else
+            # No more input parameters and no pending field declarations so
+            # processing is complete.  Clear the "last field" variable to cause
+            # the loop to end.
+            fpl_lastfld=""
+            [ -n "$fpl_debug" ] && echo "f_printline: Post-field processing: No more input parameters or fields to process" 1>&2
+        fi
+
+        # Reset variables to prepare for next field processing cycle
+        fpl_padchr="$fpl_defpadchr"
+        fpl_text="$fpl_deftext"
+        fpl_prefix="$fpl_defprefix"
+        fpl_suffix="$fpl_defsuffix"
+        fpl_mbound="$fpl_defmbound"
+        fpl_loflowc=""
+        fpl_roflowc=""
+
+    fi  # Field processing
+
+done
+
+# Print ending newline unless disabled
+[ -z "$fpl_nonl" ] && echo ""
+
+[ -n "$fpl_showcols" ] && f_colindex
+
+[ -n "$fpl_debug" ] && echo "f_printline end: status: $fpl_status" 1>&2
+return $fpl_status
+}
+
+
+# Function for brief help
+f_fplusage () {
+fold -s --width="$fpl_endcol" <<EOF
+$fpl_name <[GLOBAL OPTION]...([INFO OPTION]|[FIELD OPTION]...)>
+
+Field options
+-f, --field <[+]INTEGER[%]>
+
+These apply to the first field, or the previous --field if there is one.
+They reset to the default after each use.
+-t, --text STRING (length is STRING length, not printed length)
+-p, --prefix STRING (printed length assumed 0)
+-s, --suffix STRING (printed length assumed 0)
+-w, --whitespace STRING (printed length assumed 1)
+-m, --middle-boundary STRING (printed length assumed 1)
+
+These default as noted for first instance, then to the previous instance.
+-a, --alignment <c|l|r> (centered (default) | flush left | flush right)
+-b, --center-bias <l|r> (left (default) | right)
+
+Global options
+Must come before field options.  Default to null except as noted.
+-e, --end INTEGER
+-l, --left-overflow STRING (printed length assumed 1)
+-r, --right-overflow STRING (printed length assumed 1)
+-T, --text-default STRING
+-P, --prefix-default STRING (printed length assumed 0)
+-S, --suffix-default STRING (printed length assumed 0)
+-W, --whitespace-default STRING (default is space; printed length assumed 1)
+-L, --left-boundary STRING (printed length assumed 1)
+-M, --middle-boundary-def STRING (printed length assumed 1)
+-R, --right-boundary STRING (printed length assumed 1)${fpl_extrausgg}
+--debug (should be specified first)
+
+Information options
+Exclusive of all other options except --debug and --end.${fpl_extrausgi}
+EOF
+return $?
+}
+
+# Function for detailed help
+f_fplhelp () {
+fold -s --width="$fpl_endcol" <<EOF
+NAME
+$fpl_name - Print a line of text within fields defined by column location
+
+SYNOPSIS
+printline <[GLOBAL OPTION]...([INFO OPTION]|[FIELD OPTION]...)>
+
+DESCRIPTION
+This is a wrapper for function "f_printline" which includes this help document and a demo mode.  The f_printline function prints a line of characters, with alignment options, in fields defined by column locations.  The line structure is defined from left to right and the field declarations (and their corresponding column locations) must use the same order.  Field starting locations can either be fixed or relative, absolute or a percentage of space.  Fields are either filled with a character or a text string and text alignment can be controlled.  Text prefix and suffix options can be used for non-printing characters such as ANSI terminal escapes. Not tested with wide characters.
+
+The first field starts at column 1 and extends to the next field location (the --end value if no other fields are declared).  Except for the global options, which must always be specified first, field options apply only to this field.  New fields are declared (--field) by column location and options after the declaration apply to the new field.
+
+Global options must be specified before all field options.  Mandatory arguments to long options are also mandatory for short options.
+
+
+Field Options
+-f, --field LOCATION
+Declares a new field, ending the field to the left and creating a new one to the right (essentially a split) starting at a column number derived from LOCATION.  Since the first field starts at column 1, the column that LOCATION resolves to must be greater than 1 but not greater than the --end value.  The column number also can not coincide with the starting column of any other field, or be left of the columns of previously declared fields in the command line.
+
+LOCATION uses integers.  Multiple percentage values will resolve to the same column position if the length of the line is less than 100 columns wide.  This will cause an inadvertant error if multiple field declarations using different percentage values resolve to the same column locations.
+
+LOCATION format:
+
+A bare INTEGER indicates column INTEGER.
+
+A leading plus sign (+INTEGER) declares the field starting at INTEGER offset from the column number of the previous field.
+
+A trailing percent sign (INTEGER%) declares the field starting at the column number corresponding to the INTEGER percentage of the space between column 1 and the --end value.
+
+A leading plus sign and trailing percent sign (+INTEGER%) declares the field starting at the column number corresponding to the INTEGER percentage of the space between the starting column number of the previous field and the --end value.
+
+
+These field options affect the field declared to the left on the command line, or the first field if no declaration exists on the left.
+
+-t, --text STRING
+STRING is printed within the current field.  Backslash escapes are interpreted as per shell printf but alignment and padding is determined from STRING length, not printed length.  STRING is trimmed where it collides with field boundaries (as calculated from STRING length).
+
+-p, --prefix STRING
+Same as --text but is printed before --text STRING.  Printed length is assumed to be 0.  It is intended for non-printing characters, such as ANSI terminal escapes.
+
+-s, --suffix STRING
+Same as --prefix but is printed after --text STRING.
+
+-a, --alignment <c|l|r>
+Sets alignment of --text STRING.  Alignment is achieved via padding with --whitespace character.  Values are c = centered, l = flush left, r = flush right.  Default for the first field is centered (c).  Default for subsequent fields is that of the previous field.
+
+-b, --center-bias <l|r>
+When the parity (odd/even) length of --text STRING is different than the parity of the field length, this option determines which side of the center point the extra character will positioned.  If --text STRING is center-aligned and longer than the field, the opposite end will be trimmed.  Default is left (l).  Default for subsequent fields is that of the previous field.
+
+-w, --whitespace STRING
+STRING is used for padding when --text STRING is shorter than the field length.  Backslash escapes are interpreted as per shell printf.  Printed length is assumed to be 1 character.
+
+-m, --middle-boundary STRING
+STRING is printed at the end of the field except if it is the last field.  Backslash escapes are interpreted as per shell printf.  Reduces the length of every field except the last by 1 character.  Default is set by --def-middle-boundary.
+
+
+Global Options
+Must be specified before any field options or declarations.
+
+-e, --end INTEGER
+Defines the right-most column number.  Defaults to the terminal width (via stty) or 80 if the shell is non-interactive.
+
+-n, --no-newline
+Suppresses printing of a newline after the last field.
+
+-l, --left-overflow STRING
+-r, --right-overflow STRING
+STRING is used for indicating when the left or right ends of --text STRING have been trimmed due to exceeding the field length.  It replaces the left-most or right-most character of --text STRING.  Backslash escapes are interpreted as per shell printf.  Printed length is assumed to be 1 character.  Recommend using a horizontal ellipsis (… = octal escape sequence "\342\200\246") for both.  Alternatively a left-pointing triange (◀ = "\342\227\200") for --left-overflow and a right-pointing triangle (▶ = "\342\226\266") for --right-overflow could be used.
+
+-T, --text-default STRING
+Sets default for --text.  Default is null.
+
+-P, --prefix-default STRING
+Sets default for --prefix.  Default is null.
+
+-S, --suffix-default STRING
+Sets default for --suffix.  Default is null.
+
+-W, --whitespace-default STRING
+Sets default for --whitespace.  Default is a space.
+
+-L, --left-boundary STRING
+STRING is printed at the left end of the line (column 1).  Backslash escapes are interpreted as per shell printf.  Printed length is assumed to be 1 character and reduces the line length accordingly (the first field will start at column 2).  Default is null.
+
+-R, --right-boundary STRING
+Same as --left-boundary but is printed at the end of the line.  Reduces the line length (--end) by 1 character.
+
+-M, --middle-boundary-def STRING
+Same as --left-boundary but sets default for --middle-boundary.${fpl_extrahlpg}
+
+--debug
+Script debug output.  Way more information than you need.  Should be first on the command line.
+
+
+Information Options
+Exclusive of each other and the field options.  Only affected by --end and --debug global options.${fpl_extrahlpi}
+
+NOTES
+Text wrapping is not supported.  This limitiation can be partially worked around for single fields by using "fold" to break long lines and then printing them individually:
+(stdout) | fold -s -w <columns> | while read line; $fpl_name -t "\$line"; done
+
+ERRORS
+Any error results in a non-zero exit status.
+
+EXAMPLES
+Print a line of plus signs the width of the terminal (the default field width).
+./printline -W "+"
+
+Print "Command" centered.  Change the terminal width and repeat it.
+./printline -t "Command"
+
+Combine them.
+./printline -W "+" -t "Command"
+
+Set the default field to 20 columns wide with plus signs for whitespace, and "Description" centered in the new field with dashes as filler.  Change the terminal width and repeat the command.
+./printline -w "+" -t "Command" -f 21 -w "-" -t "Description"
+
+Add vertical bars for boundaries.
+./printline -L "|" -R "|" -M "|" -w "+" -t "Command" -f 21 -w "-" -t "Description"
+
+Switch to box drawing characters and draw a box with the text contained inside.  Requires terminal to have UTF-8 encoding support.
+./printline -L "\342\224\214" -R "\342\224\220" -M "\342\224\254"  -W "\342\224\200" -f 21; \\
+./printline -L "\342\224\202" -R "\342\224\202" -M "\342\224\202" -t "Command" -f 21 -t "Description"; \\
+./printline -L "\342\224\224" -R "\342\224\230" -M "\342\224\264" -W "\342\224\200" -f 21
+
+Add text highlighting and color.  Requires terminal to have ANSI escape code support.
+./printline -L "\342\224\214" -R "\342\224\220" -M "\342\224\254"  -W "\342\224\200" -f 21; \\
+./printline -L "\342\224\202" -R "\342\224\202" -M "\342\224\202" -P "\033[1;32m" -S "\033[0m" -t "Command" -f 21 -t "Description"; \\
+./printline -L "\342\224\224" -R "\342\224\230" -M "\342\224\264" -W "\342\224\200" -f 21
+
+AUTHOR
+Written by Jeff D. Hanson
+
+REPORTING BUGS
+Report bugs to Jeff D. Hanson <jhansonxi@gmail.com>
+
+COPYRIGHT
+Copyright 2014 Jeff D. Hanson <jhansonxi@gmail.com>
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+EOF
+return $?
+}
+
+
+f_fpldemo () {
+# Demo using "route" as input assuming it is available
+! which route >/dev/null && echo "$fpl_name: f_fpldemo: ERROR: The \"route\" command was not found"  1>&2 && return 1
+
+# Horizontal line character
+fpld_ws="\342\224\200"
+
+# Bold/white ANSI escape code for default prefix
+fpld_P="\033[1;37m"
+
+# Normal ANSI escape code for default suffix
+fpld_S="\033[0m"
+
+# Print the top line with box-drawing characters across the full terminal width
+f_printline -L "\342\224\214" -R "\342\224\220" -W "\342\224\200"
+
+# Get the top line from route for the title.  Rather inefficient.
+fpld_title=$(route | head -n 1)
+
+# Print the title with highlighting and left/right borders
+f_printline -P "$fpld_P" -S "$fpld_S" -L "\342\224\202" -R "\342\224\202" -l "\342\200\246" -r "\342\200\246" -t "$fpld_title"
+
+# Print the line between the title and columns.  Note how fields are used to
+# set the locations of the middle boundary characters.  The field positions
+# must match the rest of the column rows to get everything to align correctly.
+f_printline -L "\342\224\234" -R "\342\224\244" -M "\342\224\254" -W "$fpld_ws" -f 22% -f 43% -f 64% -f 72% -f 81% -f 86% -f 91%
+# To keep asterisks from triggering globbing
+set -f
+
+fpld_lindex=1
+route | tail -n +2 \
+| while read line; do
+    fpld_findex=1
+    fpld_flist=""
+    fpld_fldln=1
+
+    # Lazy way to break up a word but requires globbing to be disabled since
+    # an asterisk is a potential value.
+    for fpld_textval in $line; do
+        # Set field locations
+        case $fpld_findex in
+            1) fpld_fldln="22%"
+               # Set prefix/suffix defaults in global options to highlight
+               # column names only (the first line out of tail)
+               [ $fpld_lindex -eq 1 ] && fpld_flist="$fpld_flist -P \$fpld_P -S \$fpld_S"
+
+               # Set alignment for all other lines
+               [ $fpld_lindex -ne 1 ] && fpld_flist="$fpld_flist -a c -b l"
+            ;;
+            2) fpld_fldln="43%";;
+            3) fpld_fldln="64%";;
+            4) fpld_fldln="72%"
+               # Flush field #4 (Flags) left for lines after column name
+               # (later fields will default to this)
+               [ $fpld_lindex -ne 1 ] && fpld_flist="$fpld_flist -a l"
+            ;;
+            5) fpld_fldln="81%"
+               # Center field #5 (Metric) to undo #4 (and for later fields)
+               [ $fpld_lindex -ne 1 ] && fpld_flist="$fpld_flist -a c"
+            ;;
+            6) fpld_fldln="86%";;
+            7) fpld_fldln="91%";;
+            8) : ;;  # Unused
+            *) echo "$fpl_name: f_fpldemo: ERROR: Unexpected column from route: $fpld_findex" 1>&2 && exit 1;;
+        esac
+
+        fpld_flist="$fpld_flist -t \"$fpld_textval\""
+        [ $fpld_findex -lt 8 ] && fpld_flist="$fpld_flist -f $fpld_fldln"
+
+        fpld_findex=$(($fpld_findex + 1))
+    done
+
+    # Print current route line.  This could also be accomplished by using -n and
+    # calling f_printline for each field but would probably be slower.  It would
+    # avoid the "eval" however.  Remember to add escaped double-quotes for the
+    # eval second pass.
+
+    # Ellipsis overflow characters
+    eval f_printline -L "\"\342\224\202\"" -R "\"\342\224\202\"" -M "\"\342\224\202\"" -l "\"\342\200\246\"" -r "\"\342\200\246\"" $fpld_flist
+
+    # Left and right "black left-pointing triangle" overflow characters
+#    eval f_printline -L "\"\342\224\202\"" -R "\"\342\224\202\"" -M "\"\342\224\202\"" -l "\"\342\227\200\"" -r "\"\342\226\266\"" $fpld_flist
+
+
+    [ -n "$fpld_debug" ] && echo "f_fpldemo: fpld_flist: $fpld_flist" 1>&2
+
+    # Print the column name separation line if the column names just printed
+    [ $fpld_lindex -eq 1 ] && f_printline -L "\342\224\234" -R "\342\224\244" -M "\342\224\274" -W "$fpld_ws" -f 22% -f 43% -f 64% -f 72% -f 81% -f 86% -f 91%
+fpld_lindex=$(($fpld_lindex + 1))
+done
+
+# Print bottom line
+f_printline -L "\342\224\224" -R "\342\224\230" -M "\342\224\264" -W "$fpld_ws" -f 22% -f 43% -f 64% -f 72% -f 81% -f 86% -f 91%
+
+# Enable globbing
+set +f
+return 0
+}
+
+
+# Function that enables handling of secondary funtions by f_printline and sets
+# variables for supplementary text in the global in info sections of f_fplhelp
+# and f_fplusage.
+f_fplextras () {
+fpl_extrausgi=""
+fpl_extrausgg=""
+fpl_extrahlpi=""
+fpl_extrahlpg=""
+fpl_errhelp=""
+# Check for help function.  If it exists then set pattern value for global
+# parameter processing "case" statement and update f_fplhelp, f_fplusage, and
+# generic error message.
+if type f_fplhelp >/dev/null 2>&1; then
+    fpl_helpparm1="--help"
+    fpl_helpparm2="-h"
+    fpl_extrahlpi="${fpl_extrahlpi}
+
+-h, --help
+What you are reading."
+    fpl_extrausgi="${fpl_extrausgi}
+-h, --help"
+    fpl_errhelp="Try --help"
+fi
+
+# Check for usage function.  If it exists then set pattern value for global
+# parameter processing "case" statement.  If not then set f_fplhelp status.
+if type f_fplusage >/dev/null 2>&1; then
+    fpl_usgparm1="--usage"
+    fpl_usgparm2="-u"
+    fpl_extrahlpi="${fpl_extrahlpi}
+
+-u, --usage
+Brief help."
+    fpl_extrausgi="${fpl_extrausgi}
+-u, --usage (what you are reading)"
+    [ -z "$fpl_errhelp" ] && fpl_errhelp="Try --usage"
+fi
+
+# Check for demo function.  If it and "route" exists then set pattern value
+# for global parameter processing "case" statement and variable containing
+# additional info for help document.
+if type f_fpldemo >/dev/null 2>&1 && which route 1>&2 >/dev/null; then
+    fpl_demoparm="--demo"
+    fpl_extrahlpi="${fpl_extrahlpi}
+
+--demo
+Demo output with \"route\" as input.  Terminal needs UTF-8 and box-drawing character support."
+    fpld_debug="$fpl_debug"
+    fpl_extrausgi="${fpl_extrausgi}
+--demo (needs \"route\" and UTF-8 terminal support of box-drawing characters)"
+fi
+
+# Check for export function.  If it exists then set pattern value for global
+# parameter processing "case" statement and variable containing additional info
+# for help document.
+if type f_fplexport >/dev/null 2>&1 && which route 1>&2 >/dev/null; then
+    fpl_expparm="--export"
+    fpl_extrahlpi="${fpl_extrahlpi}
+
+--export
+Export f_printline with comments and debug statements removed."
+    fpl_extrausgi="${fpl_extrausgi}
+--export (f_printline only)"
+fi
+
+# Check for version function.  If it exists then set pattern value for global
+# parameter processing "case" statement and variable containing additional info
+# for help document.
+if type f_fplversion >/dev/null 2>&1 && which route 1>&2 >/dev/null; then
+    fpl_verparm1="--version"
+    fpl_verparm2="-v"
+    fpl_extrahlpi="${fpl_extrahlpi}
+
+-v, --version
+Show version information."
+    fpl_extrausgi="${fpl_extrausgi}
+-v, --version"
+fi
+
+# Check for column index function.  If it exists then set pattern value
+# for global parameter processing "case" statement and variable containing
+# additional info for help document.
+if type f_colindex >/dev/null 2>&1 && which route 1>&2 >/dev/null; then
+    fpl_colinparm1="-C"
+    fpl_colinparm2="--column-index"
+    fpl_extrahlpg="${fpl_extrahlpg}
+
+-C, --column-index
+Prints a numerical index of column positions after line is printed."
+    fpl_extrausgg="${fpl_extrausgg}
+-C, --column-index"
+fi
+
+}
+
+# Function for printing a column index
+f_colindex () {
+# Print a column index if enabled
+if [ -n "$fpl_showcols" ]; then
+   # 0-9 digits
+   fpl_rule1cnt=0
+   until [ $fpl_rule1cnt -gt $(( $fpl_endcol / 10 )) ]; do
+       echo -n "1234567890"
+       fpl_rule1cnt=$(( $fpl_rule1cnt + 1 ))
+   done | cut -c "-$fpl_endcol"
+   # Tens
+   fpl_rule1cnt=0
+   fpl_rule10cnt=1
+   until [ $fpl_rule1cnt -gt $fpl_endcol ]; do
+       echo -n "         $fpl_rule10cnt"
+       fpl_rule1cnt=$(( $fpl_rule1cnt + 10 ))
+       fpl_rule10cnt=$(( $fpl_rule10cnt + 1 ))
+       [ $fpl_rule10cnt -gt 9 ] && fpl_rule10cnt=0
+   done | cut -c "-$fpl_endcol"
+   echo ""
+else
+    return 1
+fi
+return 0
+}
+
+# Function for showing version info
+f_fplversion () {
+fold -s --width="$fpl_endcol" <<EOF
+$fpl_name v$fpl_infovers
+Print a line of text within fields defined by column location
+Copyright 2014 Jeff D. Hanson <jhansonxi@gmail.com>  License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+EOF
+}
+
+
+# Export f_printline with most comments and blank lines removed
+f_fplexport () {
+echo "# f_printline: Print a line of text within fields defined by column location
+# Copyright 2014 Jeff D. Hanson <jhansonxi@gmail.com>
+# License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+# This is free software: you are free to change and redistribute it.
+# There is NO WARRANTY, to the extent permitted by law."
+sed -n -e '/^[[:space:]]*f_printline[[:space:]]\+()[[:space:]]*{[[:space:]]*$/,/^[[:space:]]*}[[:space:]]*$/{:a;N;/\n[[:space:]]*}[[:space:]]*/!ba' \
+-e '/\n[[:space:]]*[[:alpha:]]\+[[_[:alnum:]]*[[:space:]]()[[:space:]]{[[:space:]]*/q;p}' $0 \
+| sed 's/^[[:space:]]*#.*$\|^[[:space:]]*$\|^.*fpl_debug.*$//;/^$/d'
+return $?
+}
+
+# Main program
+[ $# -gt 0 ] && [ "$1" = "--export" ] && f_fplexport && exit
+
+f_printline "$@"
+
+exit $?
