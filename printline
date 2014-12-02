@@ -22,15 +22,15 @@ pl_version="1.1"
 
 # Changes:
 # 0.1 - Initial release
-# 1.0 - Major rewrite.  WTF was I thinking?
-# 1.1 - Replaced printf %b with %s in whitespace padding section since it
-# did not work in Bash.
-
+# 0.2 - Major rewrite.  WTF was I thinking?
+# 1.0 - Initial release
+# 1.1 - f_printline v0.3: Replaced printf %b with %s in whitespace padding
+# section since it did not work in Bash (%b was never necessary anyways).
 
 # Function for printing a line of text within fields defined by column location.
 f_printline () {
 
-fpl_version="0.2"
+fpl_version="0.3"
 
 # Debug enabled if not null
 fpl_debug=""
