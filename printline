@@ -645,7 +645,7 @@ while [ $# -gt 0 ] || [ -n "$fpl_lastfld" ]; do
 # Print left-side padding but not if 0 quantity since this always prints
 # at least once
 [ $fpl_lpadqty -gt 0 ] \
-&& printf "%0.b${fpl_padchr}" $(seq 1 $fpl_lpadqty)
+&& printf "%0.s${fpl_padchr}" $(seq 1 $fpl_lpadqty)
 
 # Print text prefix
 [ -n "$fpl_prefix" ] && printf "%b" "$fpl_prefix"
@@ -665,7 +665,7 @@ printf "%b" "$fpl_text"
 # Print right-side padding but not if 0 quantity since this always prints
 # at least once
 [ $fpl_rpadqty -gt 0 ] \
-&& printf "%0.b${fpl_padchr}" $(seq 1 $fpl_rpadqty)
+&& printf "%0.s${fpl_padchr}" $(seq 1 $fpl_rpadqty)
 
 # Print middle boundary if not null and not the last field
 [ -n "$fpl_mbound" ] && [ -n "$fpl_nxtfield" ] \
