@@ -1,18 +1,18 @@
 #! /bin/sh
 # printline
 # A wrapper for f_printline function.  Adds built-in help and demo.
-pl_version="1.1"
+pl_version="1.2"
 
 # f_printline: A function for printing a line of text within fields defined by
 # column location.  Tested with dash and bash.  Also requires grep (Debian/
 # Ubuntu package "grep") and wc, stty, fold, cut, printf, echo, seq ("coreutils"
-# or shell built-ins).  Support functions f_fplhelp (built-in help) and
+# or shell built-ins), and sed.  Support functions f_fplhelp (built-in help) and
 # f_fpldemo are optional.  The demo requires "route" (net-tools).
 
-# Copyright 2014 Jeff D. Hanson <jhansonxi@gmail.com>
-# License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
-# This is free software: you are free to change and redistribute it.
-# There is NO WARRANTY, to the extent permitted by law."
+# Copyright statement and assignment to variable for later use
+fpl_copyright="Copyright 2014, 2015 Jeff D. Hanson <jhansonxi@gmail.com>
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law."
 
 # TODO:
 # Add gettext support: https://www.gnu.org/software/gettext/
@@ -26,6 +26,8 @@ pl_version="1.1"
 # 1.0 - Initial release
 # 1.1 - f_printline v0.3: Replaced printf %b with %s in whitespace padding
 # section since it did not work in Bash (%b was never necessary anyways).
+# 1.2 - Corrected command line in wrapping/folding note help text, eliminated
+# redundant copyright text, other minor corrections.
 
 # Function for printing a line of text within fields defined by column location.
 f_printline () {
@@ -115,7 +117,7 @@ type f_fplextras >/dev/null 2>&1 && f_fplextras
 # Default starting position of current field
 fpl_fldstrt=1
 
-# Intialize field end variable
+# Initialize field end variable
 fpl_fldendp=0
 
 # Initialize "show" variables
@@ -877,7 +879,7 @@ Exclusive of each other and the field options.  Only affected by --end and --deb
 
 NOTES
 Text wrapping is not supported.  This limitiation can be partially worked around for single fields by using "fold" to break long lines and then printing them individually:
-(stdout) | fold -s -w <columns> | while read line; $fpl_name -t "\$line"; done
+(stdout) | fold -s -w <columns> | while read line; do ./$fpl_name -a l -t "\$line"; done
 
 ERRORS
 Any error results in a non-zero exit status.
@@ -915,9 +917,7 @@ REPORTING BUGS
 Report bugs to Jeff D. Hanson <jhansonxi@gmail.com>
 
 COPYRIGHT
-Copyright 2014 Jeff D. Hanson <jhansonxi@gmail.com>
-License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
-This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+$fpl_copyright
 EOF
 return $?
 }
@@ -1149,19 +1149,14 @@ f_fplversion () {
 fold -s --width="$fpl_endcol" <<EOF
 $fpl_name v$fpl_infovers
 Print a line of text within fields defined by column location
-Copyright 2014 Jeff D. Hanson <jhansonxi@gmail.com>  License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
-This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+$fpl_copyright
 EOF
 }
 
 
 # Export f_printline with most comments and blank lines removed
 f_fplexport () {
-echo "# f_printline: Print a line of text within fields defined by column location
-# Copyright 2014 Jeff D. Hanson <jhansonxi@gmail.com>
-# License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
-# This is free software: you are free to change and redistribute it.
-# There is NO WARRANTY, to the extent permitted by law."
+echo "$fpl_copyright" | sed 's/.*/# &/'
 sed -n -e '/^[[:space:]]*f_printline[[:space:]]\+()[[:space:]]*{[[:space:]]*$/,/^[[:space:]]*}[[:space:]]*$/{:a;N;/\n[[:space:]]*}[[:space:]]*/!ba' \
 -e '/\n[[:space:]]*[[:alpha:]]\+[[_[:alnum:]]*[[:space:]]()[[:space:]]{[[:space:]]*/q;p}' $0 \
 | sed 's/^[[:space:]]*#.*$\|^[[:space:]]*$\|^.*fpl_debug.*$//;/^$/d'
